@@ -1,21 +1,43 @@
 from bsky_utils import *
 import sys
+import shutil
 
+def safe_delete_tmp_dir(tmp_dir, base_dir):
+    try:
+        tmp_dir = tmp_dir.resolve()
+        base_dir = base_dir.resolve()
+        if base_dir in tmp_dir.parents and tmp_dir.is_dir():
+            shutil.rmtree(tmp_dir)
+            print(f"Deleted: {tmp_dir}")
+        else:
+            raise ValueError("Refusing to delete: tmp_dir is not inside the expected base directory.")
+    except Exception as e:
+        print(f"Error deleting {tmp_dir}: {e}")
+
+
+def retrieve_blob_path(url, base_dir, tmp_dir):
+    if not url.startswith('https://'):
+        return str(base_dir / url)
+
+    filepath = tmp_dir / url.split("/")[-1].split("?")[0]
+
+    response = requests.get(url, stream=True)
+    response.raise_for_status()
+
+    with open(filepath, "wb") as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            f.write(chunk)
+
+    return filepath
+    
 
 def find_or_create_channel(channel, did, service, session, guild_uri):
-    # existing_channels = list_records(did, service, 'dev.dreary.discord.channel')
-    # for echan in existing_channels:
-    #     uri = traverse(echan, [{'value': {'id': channel['id']}}, 'uri'])
-    #     if uri:
-    #         print(f"Found existing channel record: {uri}")
-    #         return uri
     if (existing_channel := get_record(did, 'dev.dreary.discord.channel', channel['id'], service, fatal=False)):
         print(f"Found existing channel record: {existing_channel['uri']}")
         return existing_channel['uri']
     print("No matching existing channel record found. Creating new channel record.")
     record = {
         'guild': guild_uri,
-        # 'id': channel['id'],
         'name': channel['name'],
         'type': channel['type'],
         'categoryId': channel.get('categoryId'),
@@ -24,13 +46,8 @@ def find_or_create_channel(channel, did, service, session, guild_uri):
     }
     return create_record(session, service, 'dev.dreary.discord.channel', record, rkey=channel['id'])
 
-def find_or_create_guild(guild, did, service, session, base_dir):
-    # existing_guilds = list_records(did, service, 'dev.dreary.discord.guild')
-    # for eguild in existing_guilds:
-    #     uri = traverse(eguild, [{'value': {'id': guild['id']}}, 'uri'])
-    #     if uri:
-    #         print(f"Found existing guild record: {uri}")
-    #         return uri
+
+def find_or_create_guild(guild, did, service, session, base_dir, tmp_dir):
     if (existing_guild := get_record(did, 'dev.dreary.discord.guild', guild['id'], service, fatal=False)):
         print(f"Found existing guild record: {existing_guild['uri']}")
         return existing_guild['uri']
@@ -39,17 +56,18 @@ def find_or_create_guild(guild, did, service, session, base_dir):
     if not (icon_path := guild.get('iconUrl')):
         raise Exception("Missing necessary guild field: iconUrl")
 
-    blob, blob_type = upload_blob(session, service, str(base_dir / icon_path))
+    blob_location = retrieve_blob_path(icon_path, base_dir, tmp_dir)
+    blob, blob_type = upload_blob(session, service, blob_location)
     if blob_type != "image":
         raise Exception(f"Unsupported blob type '{blob_type}'")
     record = {
-        # 'id': guild['id'],
         'name': guild['name'],
         'icon': blob
     }
     return create_record(session, service, 'dev.dreary.discord.guild', record, rkey=guild['id'])
 
-def find_or_create_author(author, eauth_index, did, service, session, base_dir):
+
+def find_or_create_author(author, eauth_index, did, service, session, base_dir, tmp_dir):
     
     if author['id'] in eauth_index:
         return compose_uri(did, author['id'], collection='dev.dreary.discord.author')
@@ -57,7 +75,8 @@ def find_or_create_author(author, eauth_index, did, service, session, base_dir):
     if not (avatar_path := author.get('avatarUrl')):
         raise Exception("Missing necessary guild field: avatarUrl")
 
-    blob, blob_type = upload_blob(session, service, str(base_dir / avatar_path))
+    blob_location = retrieve_blob_path(avatar_path, base_dir, tmp_dir)
+    blob, blob_type = upload_blob(session, service, blob_location)
     if blob_type != "image":
         raise Exception(f"Unsupported blob type '{blob_type}'")
     
@@ -72,7 +91,8 @@ def find_or_create_author(author, eauth_index, did, service, session, base_dir):
     }
     return create_record(session, service, 'dev.dreary.discord.author', record, rkey=author['id'])
 
-def find_or_create_messages(messages, did, service, session, guild_uri, channel_uri, base_dir):
+
+def find_or_create_messages(messages, did, service, session, guild_uri, channel_uri, base_dir, tmp_dir):
     existing_authors = list_records(did, service, 'dev.dreary.discord.author')
     eauth_index = {decompose_uri(uri)[2]: uri for eauth in existing_authors if (uri := eauth['uri'])}
     existing_messages = list_records(did, service, 'dev.dreary.discord.message')
@@ -84,31 +104,31 @@ def find_or_create_messages(messages, did, service, session, guild_uri, channel_
         if message['id'] in emsg_index:
             print(f"Skipping existing message: {message['id']}")
             continue
-        # message['author'] = find_or_create_author(message['author'], existing_authors, did, service, session, base_dir)
-        # message['index'] = i # shrug, probably better than linked list but idk
-        # message['timestamp'] = convert_timestamp_utc(message['timestamp'])
         # TODO: reaction emojis (particularly if svg files don't work), authors, custom emotes?
         # TODO: embeds, attachments, stickers, mentions
-        # TODO: referece (with uri)
-        # "reference": {
-        #     "messageId": "1359202561080688762",
-        #     "channelId": "1336910904679338079",
-        #     "guildId": null
-        # }
-        author_uri = find_or_create_author(message['author'], eauth_index, did, service, session, base_dir)
+        author_uri = find_or_create_author(message['author'], eauth_index, did, service, session, base_dir, tmp_dir)
         eauth_index[decompose_uri(author_uri)[2]] = author_uri
+        # alternatively i could replace just the values i want in the original message, 
+        # which has the advantage of automatically accomodating unexpected fields
+        # this also has the disadvantage of automatically accomodating unexpected fields
         record = {
             'type': message['type'],
             'timestamp': convert_timestamp_utc(message['timestamp']),
             'timestampEdited': message.get('timestampEdited'),
-            'channelIndex': i,
+            'channelIndex': i, # timestamp is probably cannonical
             'callEndedTimestamp': message.get('callEndedTimestamp'),
             'isPinned': message.get('isPinned'),
             'content': message['content'],
             'author': author_uri,
-            'guild': guild_uri, # redundant if we have channel uri?
+            'guild': guild_uri,
             'channel': channel_uri
         }
+        if ref := message.get('reference'):
+            record['reference'] = {}
+            record['reference']['message'] = compose_uri(did, ref.get('messageId'), collection='dev.dreary.discord.message')
+            record['reference']['channel'] = compose_uri(did, ref.get('channelId'), collection='dev.dreary.discord.channel')
+            record['reference']['guild'] = compose_uri(did, ref.get('guildId') or "0", collection='dev.dreary.discord.guild')
+
         create_record(session, service, 'dev.dreary.discord.message', record, rkey=message['id'])
 
 def main():
@@ -139,12 +159,15 @@ def main():
     except:
         raise Exception("Input a valid JSON file path")
 
-    guild_uri = find_or_create_guild(data['guild'], did, service, session, base_dir)
-    return
+    tmp_dir = base_dir / f'tmp-{generate_timestamp()}'
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    guild_uri = find_or_create_guild(data['guild'], did, service, session, base_dir, tmp_dir)
     channel_uri = find_or_create_channel(data['channel'], did, service, session, guild_uri)
-    find_or_create_messages(data['messages'], did, service, session, guild_uri, channel_uri, base_dir)
+    find_or_create_messages(data['messages'], did, service, session, guild_uri, channel_uri, base_dir, tmp_dir)
 
     print('All done importing :3')
+    safe_delete_tmp_dir(tmp_dir, base_dir)
 
 
 if __name__ == "__main__":
