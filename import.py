@@ -64,8 +64,8 @@ def find_or_create_guild(guild, did, service, session, base_dir, tmp_dir):
         raise Exception("Missing necessary guild field: iconUrl")
 
     blob_location = retrieve_blob_path(icon_path, base_dir, tmp_dir)
-    blob, blob_type = upload_blob(session, service, blob_location)
-    if blob_type != "image":
+    blob = upload_blob(session, service, blob_location)
+    if blob["mimeType"].split('/')[0] != "image":
         raise Exception(f"Unsupported blob type '{blob_type}'")
     record = {
         'name': guild['name'],
@@ -82,8 +82,8 @@ def find_or_create_author(author, eauth_index, did, service, session, base_dir, 
         raise Exception("Missing necessary author field: avatarUrl")
 
     blob_location = retrieve_blob_path(avatar_path, base_dir, tmp_dir)
-    blob, blob_type = upload_blob(session, service, blob_location)
-    if blob_type != "image":
+    blob = upload_blob(session, service, blob_location)
+    if blob["mimeType"].split('/')[0] != "image":
         raise Exception(f"Unsupported blob type '{blob_type}'")
     
     record = {
